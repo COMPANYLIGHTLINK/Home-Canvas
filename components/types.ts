@@ -7,4 +7,7 @@ export interface Product {
   id: number;
   name: string;
   imageUrl: string;
+  surfaceType: 'wall' | 'floor';
+  category: string;
+  applicationType: 'tile' | 'single';
 }

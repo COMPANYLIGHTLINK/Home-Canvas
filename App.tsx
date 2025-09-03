@@ -5,18 +5,12 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { generateCompositeImage } from './services/geminiService';
-import { Product } from './types';
+import { Product } from './components/types';
 import Header from './components/Header';
 import ImageUploader from './components/ImageUploader';
 import ObjectCard from './components/ObjectCard';
 import Spinner from './components/Spinner';
 import DebugModal from './components/DebugModal';
-import TouchGhost from './components/TouchGhost';
-
-// Pre-load a transparent image to use for hiding the default drag ghost.
-// This prevents a race condition on the first drag.
-const transparentDragImage = new Image();
-transparentDragImage.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 
 // Helper to convert a data URL string to a File object
 const dataURLtoFile = (dataurl: string, filename: string): File => {
@@ -36,111 +30,128 @@ const dataURLtoFile = (dataurl: string, filename: string): File => {
 }
 
 const loadingMessages = [
-    "Analyzing your tile pattern...",
-    "Surveying the scene...",
+    "Analyzing the scene...",
     "Identifying the target surface with AI...",
     "Crafting the perfect visualization prompt...",
-    "Applying tiles with photorealistic rendering...",
+    "Applying product with photorealistic rendering...",
     "Assembling the final scene..."
 ];
 
+const DEFAULT_PRODUCTS: Product[] = [
+  // Wall
+  { id: 1, name: 'Ceramic Subway Tile', imageUrl: '/assets/products/wall_tile_1.jpeg', surfaceType: 'wall', category: 'Tiles', applicationType: 'tile' },
+  { id: 2, name: 'Hexagonal Pattern', imageUrl: '/assets/products/wall_tile_2.jpeg', surfaceType: 'wall', category: 'Tiles', applicationType: 'tile' },
+  { id: 3, name: 'Botanical Print', imageUrl: '/assets/products/wallpaper_1.jpeg', surfaceType: 'wall', category: 'Wallpaper', applicationType: 'tile' },
+  { id: 4, name: 'Abstract Lines', imageUrl: '/assets/products/wallpaper_2.jpeg', surfaceType: 'wall', category: 'Wallpaper', applicationType: 'tile' },
+  { id: 5, name: 'Forest Mural', imageUrl: '/assets/products/mural_1.jpeg', surfaceType: 'wall', category: 'Mural', applicationType: 'single' },
+  { id: 6, name: 'Black Gallery Frame', imageUrl: '/assets/products/frame_1.jpeg', surfaceType: 'wall', category: 'Photo Frame', applicationType: 'single' },
+  // Floor
+  { id: 7, name: 'Persian Style Rug', imageUrl: '/assets/products/rug_1.jpeg', surfaceType: 'floor', category: 'Rug', applicationType: 'single' },
+  { id: 8, name: 'Modern Geometric Rug', imageUrl: '/assets/products/rug_2.jpeg', surfaceType: 'floor', category: 'Rug', applicationType: 'single' },
+  { id: 9, name: 'Marble Floor Tile', imageUrl: '/assets/products/floor_tile_1.jpeg', surfaceType: 'floor', category: 'Tile', applicationType: 'tile' },
+  { id: 10, name: 'Hardwood Parquet', imageUrl: '/assets/products/floor_tile_2.jpeg', surfaceType: 'floor', category: 'Tile', applicationType: 'tile' },
+];
+
+const CATEGORIES = {
+  wall: ['Tiles', 'Wallpaper', 'Mural', 'Photo Frame'],
+  floor: ['Rug', 'Tile']
+};
 
 const App: React.FC = () => {
-  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
-  const [productImageFile, setProductImageFile] = useState<File | null>(null);
   const [sceneImage, setSceneImage] = useState<File | null>(null);
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const [customProducts, setCustomProducts] = useState<Product[]>([]);
+  const [allProducts, setAllProducts] = useState<Product[]>(DEFAULT_PRODUCTS);
+  
+  const [activeSurface, setActiveSurface] = useState<'wall' | 'floor'>('wall');
+  const [activeCategory, setActiveCategory] = useState<string>('Tiles');
+
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [loadingMessageIndex, setLoadingMessageIndex] = useState(0);
+  
+  const [history, setHistory] = useState<File[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+
   const [persistedOrbPosition, setPersistedOrbPosition] = useState<{x: number, y: number} | null>(null);
   const [debugImageUrl, setDebugImageUrl] = useState<string | null>(null);
   const [debugPrompt, setDebugPrompt] = useState<string | null>(null);
   const [isDebugModalOpen, setIsDebugModalOpen] = useState(false);
 
-  // State for touch drag & drop
-  const [isTouchDragging, setIsTouchDragging] = useState<boolean>(false);
-  const [touchGhostPosition, setTouchGhostPosition] = useState<{x: number, y: number} | null>(null);
-  const [isHoveringDropZone, setIsHoveringDropZone] = useState<boolean>(false);
-  const [touchOrbPosition, setTouchOrbPosition] = useState<{x: number, y: number} | null>(null);
   const sceneImgRef = useRef<HTMLImageElement>(null);
+  const customProductInputRef = useRef<HTMLInputElement>(null);
   
   const sceneImageUrl = sceneImage ? URL.createObjectURL(sceneImage) : null;
-  const productImageUrl = selectedProduct ? selectedProduct.imageUrl : null;
 
-  const handleProductImageUpload = useCallback((file: File) => {
-    // useEffect will handle cleaning up the previous blob URL
-    setError(null);
-    try {
-        const imageUrl = URL.createObjectURL(file);
-        const product: Product = {
-            id: Date.now(),
-            name: file.name,
-            imageUrl: imageUrl,
-        };
-        setProductImageFile(file);
-        setSelectedProduct(product);
-    } catch(err) {
-      const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
-      setError(`Could not load the product image. Details: ${errorMessage}`);
-      console.error(err);
-    }
-  }, []);
+  const handleSceneUpload = (file: File) => {
+    setSceneImage(file);
+    const newHistory = [file];
+    setHistory(newHistory);
+    setHistoryIndex(0);
+    resetProductState();
+  };
 
   const handleInstantStart = useCallback(async () => {
     setError(null);
     try {
-      // Fetch the default images
-      const [objectResponse, sceneResponse] = await Promise.all([
-        fetch('/assets/object.jpeg'),
-        fetch('/assets/scene.jpeg')
-      ]);
-
-      if (!objectResponse.ok || !sceneResponse.ok) {
-        throw new Error('Failed to load default images');
-      }
-
-      // Convert to blobs then to File objects
-      const [objectBlob, sceneBlob] = await Promise.all([
-        objectResponse.blob(),
-        sceneResponse.blob()
-      ]);
-
-      const objectFile = new File([objectBlob], 'object.jpeg', { type: 'image/jpeg' });
+      const sceneResponse = await fetch('/assets/scene.jpeg');
+      if (!sceneResponse.ok) throw new Error('Failed to load default scene image');
+      const sceneBlob = await sceneResponse.blob();
       const sceneFile = new File([sceneBlob], 'scene.jpeg', { type: 'image/jpeg' });
-
-      // Update state with the new files
-      setSceneImage(sceneFile);
-      handleProductImageUpload(objectFile);
+      handleSceneUpload(sceneFile);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
       setError(`Could not load default images. Details: ${errorMessage}`);
       console.error(err);
     }
-  }, [handleProductImageUpload]);
+  }, []);
 
-  const handleProductDrop = useCallback(async (position: {x: number, y: number}, relativePosition: { xPercent: number; yPercent: number; }) => {
-    if (!productImageFile || !sceneImage || !selectedProduct) {
-      setError('An unexpected error occurred. Please try again.');
+  const handleProductApply = useCallback(async (position: {x: number, y: number}, relativePosition: { xPercent: number; yPercent: number; }) => {
+    if (!selectedProduct || !sceneImage) {
+      setError('Please select a product before clicking on the scene.');
       return;
     }
+    
+    // Fetch product image file (could be from a URL or already a File)
+    let productFile: File;
+    try {
+      const response = await fetch(selectedProduct.imageUrl);
+      const blob = await response.blob();
+      productFile = new File([blob], selectedProduct.name, {type: blob.type});
+    } catch (err) {
+      setError(`Could not load the selected product image. Please try again.`);
+      console.error(err);
+      return;
+    }
+
     setPersistedOrbPosition(position);
     setIsLoading(true);
     setError(null);
+
     try {
       const { finalImageUrl, debugImageUrl, finalPrompt } = await generateCompositeImage(
-        productImageFile, 
+        productFile, 
         selectedProduct.name,
         sceneImage,
         sceneImage.name,
-        relativePosition
+        relativePosition,
+        selectedProduct.applicationType
       );
+
       setDebugImageUrl(debugImageUrl);
       setDebugPrompt(finalPrompt);
+      
       const newSceneFile = dataURLtoFile(finalImageUrl, `generated-scene-${Date.now()}.jpeg`);
+      
+      // Update history
+      const newHistory = history.slice(0, historyIndex + 1);
+      newHistory.push(newSceneFile);
+      setHistory(newHistory);
+      setHistoryIndex(newHistory.length - 1);
+
       setSceneImage(newSceneFile);
 
-    } catch (err)
- {
+    } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
       setError(`Failed to generate the image. ${errorMessage}`);
       console.error(err);
@@ -148,154 +159,96 @@ const App: React.FC = () => {
       setIsLoading(false);
       setPersistedOrbPosition(null);
     }
-  }, [productImageFile, sceneImage, selectedProduct]);
+  }, [selectedProduct, sceneImage, history, historyIndex]);
 
+  const handleUndo = () => {
+    if (historyIndex > 0) {
+      const newIndex = historyIndex - 1;
+      setHistoryIndex(newIndex);
+      setSceneImage(history[newIndex]);
+    }
+  };
 
-  const handleReset = useCallback(() => {
-    // Let useEffect handle URL revocation
+  const handleRedo = () => {
+    if (historyIndex < history.length - 1) {
+      const newIndex = historyIndex + 1;
+      setHistoryIndex(newIndex);
+      setSceneImage(history[newIndex]);
+    }
+  };
+
+  const resetProductState = () => {
     setSelectedProduct(null);
-    setProductImageFile(null);
+    setPersistedOrbPosition(null);
+    setDebugImageUrl(null);
+    setDebugPrompt(null);
+  };
+  
+  const handleReset = useCallback(() => {
     setSceneImage(null);
     setError(null);
     setIsLoading(false);
-    setPersistedOrbPosition(null);
-    setDebugImageUrl(null);
-    setDebugPrompt(null);
+    setHistory([]);
+    setHistoryIndex(-1);
+    setCustomProducts([]);
+    setAllProducts(DEFAULT_PRODUCTS);
+    resetProductState();
   }, []);
 
-  const handleChangeProduct = useCallback(() => {
-    // Let useEffect handle URL revocation
-    setSelectedProduct(null);
-    setProductImageFile(null);
-    setPersistedOrbPosition(null);
-    setDebugImageUrl(null);
-    setDebugPrompt(null);
-  }, []);
-  
   const handleChangeScene = useCallback(() => {
     setSceneImage(null);
-    setPersistedOrbPosition(null);
-    setDebugImageUrl(null);
-    setDebugPrompt(null);
+    setHistory([]);
+    setHistoryIndex(-1);
+    resetProductState();
   }, []);
 
+  const handleCustomProductUpload = (event: React.ChangeEvent<HTMLInputElement>, applicationType: 'tile' | 'single') => {
+    const file = event.target.files?.[0];
+    if (file) {
+      const imageUrl = URL.createObjectURL(file);
+      const newProduct: Product = {
+        id: Date.now(),
+        name: file.name,
+        imageUrl,
+        surfaceType: activeSurface,
+        category: activeCategory,
+        applicationType,
+      };
+      const newCustomProducts = [...customProducts, newProduct];
+      setCustomProducts(newCustomProducts);
+      setAllProducts([...DEFAULT_PRODUCTS, ...newCustomProducts]);
+      setSelectedProduct(newProduct);
+    }
+    // Reset file input value to allow uploading the same file again
+    if (event.target) {
+        event.target.value = '';
+    }
+  };
+
   useEffect(() => {
-    // Clean up the scene's object URL when the component unmounts or the URL changes
-    return () => {
-        if (sceneImageUrl) URL.revokeObjectURL(sceneImageUrl);
-    };
-  }, [sceneImageUrl]);
-  
+    // Set default active category when surface changes
+    setActiveCategory(CATEGORIES[activeSurface][0]);
+  }, [activeSurface]);
+
   useEffect(() => {
-    // Clean up the product's object URL when the component unmounts or the URL changes
+    // Clean up object URLs for custom products
     return () => {
-        if (productImageUrl && productImageUrl.startsWith('blob:')) {
-            URL.revokeObjectURL(productImageUrl);
-        }
-    };
-  }, [productImageUrl]);
+      customProducts.forEach(p => URL.revokeObjectURL(p.imageUrl));
+    }
+  }, [customProducts]);
 
   useEffect(() => {
     let interval: ReturnType<typeof setInterval> | undefined;
     if (isLoading) {
-        setLoadingMessageIndex(0); // Reset on start
-        interval = setInterval(() => {
-            setLoadingMessageIndex(prevIndex => (prevIndex + 1) % loadingMessages.length);
-        }, 3000);
+      setLoadingMessageIndex(0); // Reset on start
+      interval = setInterval(() => {
+        setLoadingMessageIndex(prevIndex => (prevIndex + 1) % loadingMessages.length);
+      }, 3000);
     }
     return () => {
-        if (interval) clearInterval(interval);
+      if (interval) clearInterval(interval);
     };
   }, [isLoading]);
-
-  const handleTouchStart = (e: React.TouchEvent) => {
-    if (!selectedProduct) return;
-    // Prevent page scroll
-    e.preventDefault();
-    setIsTouchDragging(true);
-    const touch = e.touches[0];
-    setTouchGhostPosition({ x: touch.clientX, y: touch.clientY });
-  };
-
-  useEffect(() => {
-    const handleTouchMove = (e: TouchEvent) => {
-      if (!isTouchDragging) return;
-      const touch = e.touches[0];
-      setTouchGhostPosition({ x: touch.clientX, y: touch.clientY });
-      
-      const elementUnderTouch = document.elementFromPoint(touch.clientX, touch.clientY);
-      const dropZone = elementUnderTouch?.closest<HTMLDivElement>('[data-dropzone-id="scene-uploader"]');
-
-      if (dropZone) {
-          const rect = dropZone.getBoundingClientRect();
-          setTouchOrbPosition({ x: touch.clientX - rect.left, y: touch.clientY - rect.top });
-          setIsHoveringDropZone(true);
-      } else {
-          setIsHoveringDropZone(false);
-          setTouchOrbPosition(null);
-      }
-    };
-
-    const handleTouchEnd = (e: TouchEvent) => {
-      if (!isTouchDragging) return;
-      
-      const touch = e.changedTouches[0];
-      const elementUnderTouch = document.elementFromPoint(touch.clientX, touch.clientY);
-      const dropZone = elementUnderTouch?.closest<HTMLDivElement>('[data-dropzone-id="scene-uploader"]');
-
-      if (dropZone && sceneImgRef.current) {
-          const img = sceneImgRef.current;
-          const containerRect = dropZone.getBoundingClientRect();
-          const { naturalWidth, naturalHeight } = img;
-          const { width: containerWidth, height: containerHeight } = containerRect;
-
-          const imageAspectRatio = naturalWidth / naturalHeight;
-          const containerAspectRatio = containerWidth / containerHeight;
-
-          let renderedWidth, renderedHeight;
-          if (imageAspectRatio > containerAspectRatio) {
-              renderedWidth = containerWidth;
-              renderedHeight = containerWidth / imageAspectRatio;
-          } else {
-              renderedHeight = containerHeight;
-              renderedWidth = containerHeight * imageAspectRatio;
-          }
-          
-          const offsetX = (containerWidth - renderedWidth) / 2;
-          const offsetY = (containerHeight - renderedHeight) / 2;
-
-          const dropX = touch.clientX - containerRect.left;
-          const dropY = touch.clientY - containerRect.top;
-
-          const imageX = dropX - offsetX;
-          const imageY = dropY - offsetY;
-          
-          if (!(imageX < 0 || imageX > renderedWidth || imageY < 0 || imageY > renderedHeight)) {
-            const xPercent = (imageX / renderedWidth) * 100;
-            const yPercent = (imageY / renderedHeight) * 100;
-            
-            handleProductDrop({ x: dropX, y: dropY }, { xPercent, yPercent });
-          }
-      }
-
-      setIsTouchDragging(false);
-      setTouchGhostPosition(null);
-      setIsHoveringDropZone(false);
-      setTouchOrbPosition(null);
-    };
-
-    if (isTouchDragging) {
-      document.body.style.overflow = 'hidden'; // Prevent scrolling
-      window.addEventListener('touchmove', handleTouchMove, { passive: false });
-      window.addEventListener('touchend', handleTouchEnd, { passive: false });
-    }
-
-    return () => {
-      document.body.style.overflow = 'auto';
-      window.removeEventListener('touchmove', handleTouchMove);
-      window.removeEventListener('touchend', handleTouchEnd);
-    };
-  }, [isTouchDragging, handleProductDrop]);
 
   const renderContent = () => {
     if (error) {
@@ -313,31 +266,16 @@ const App: React.FC = () => {
         );
     }
     
-    if (!productImageFile || !sceneImage) {
+    if (!sceneImage) {
       return (
-        <div className="w-full max-w-6xl mx-auto animate-fade-in">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
-            <div className="flex flex-col">
-              <h2 className="text-2xl font-extrabold text-center mb-5 text-zinc-800">Upload Tile Pattern</h2>
-              <ImageUploader 
-                id="product-uploader"
-                onFileSelect={handleProductImageUpload}
-                imageUrl={productImageUrl}
-              />
-            </div>
-            <div className="flex flex-col">
-              <h2 className="text-2xl font-extrabold text-center mb-5 text-zinc-800">Upload Scene</h2>
-              <ImageUploader 
-                id="scene-uploader"
-                onFileSelect={setSceneImage}
-                imageUrl={sceneImageUrl}
-              />
-            </div>
-          </div>
+        <div className="w-full max-w-4xl mx-auto animate-fade-in flex flex-col items-center">
+          <h2 className="text-2xl font-extrabold text-center mb-5 text-zinc-800">Upload a Photo of Your Room</h2>
+          <ImageUploader 
+            id="scene-uploader"
+            onFileSelect={handleSceneUpload}
+            imageUrl={sceneImageUrl}
+          />
           <div className="text-center mt-10 min-h-[4rem] flex flex-col justify-center items-center">
-            <p className="text-zinc-500 animate-fade-in">
-              Upload a tile pattern and a scene image to begin.
-            </p>
             <p className="text-zinc-500 animate-fade-in mt-2">
               Or click{' '}
               <button
@@ -353,96 +291,91 @@ const App: React.FC = () => {
       );
     }
 
+    const visibleProducts = allProducts.filter(p => p.surfaceType === activeSurface && p.category === activeCategory);
+
     return (
-      <div className="w-full max-w-7xl mx-auto animate-fade-in">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 items-stretch">
-          {/* Product Column */}
-          <div className="md:col-span-1 flex flex-col">
-            <h2 className="text-2xl font-extrabold text-center mb-5 text-zinc-800">Tile Pattern</h2>
-            <div className="flex-grow flex items-center justify-center">
-              <div 
-                  draggable="true" 
-                  onDragStart={(e) => {
-                      e.dataTransfer.effectAllowed = 'move';
-                      e.dataTransfer.setDragImage(transparentDragImage, 0, 0);
-                  }}
-                  onTouchStart={handleTouchStart}
-                  className="cursor-move w-full max-w-xs"
-              >
-                  <ObjectCard product={selectedProduct!} isSelected={true} />
-              </div>
+      <div className="w-full max-w-screen-2xl mx-auto animate-fade-in">
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
+          {/* Sidebar */}
+          <aside className="lg:col-span-1 bg-zinc-50 rounded-lg p-4 h-full">
+            <h2 className="text-xl font-extrabold mb-4 text-zinc-800">Products</h2>
+            {/* Surface Selector */}
+            <div className="flex bg-zinc-200 rounded-lg p-1 mb-4">
+              <button onClick={() => setActiveSurface('wall')} className={`flex-1 p-2 rounded-md font-semibold transition-colors ${activeSurface === 'wall' ? 'bg-white shadow' : 'text-zinc-600'}`}>Wall</button>
+              <button onClick={() => setActiveSurface('floor')} className={`flex-1 p-2 rounded-md font-semibold transition-colors ${activeSurface === 'floor' ? 'bg-white shadow' : 'text-zinc-600'}`}>Floor</button>
             </div>
-            <div className="text-center mt-4">
-               <div className="h-5 flex items-center justify-center">
-                <button
-                    onClick={handleChangeProduct}
-                    className="text-sm text-blue-600 hover:text-blue-800 font-semibold"
-                >
-                    Change Tile Pattern
-                </button>
-               </div>
+            {/* Category Selector */}
+            <div className="flex flex-wrap gap-2 mb-4">
+              {CATEGORIES[activeSurface].map(cat => (
+                <button key={cat} onClick={() => setActiveCategory(cat)} className={`px-3 py-1 text-sm rounded-full font-semibold transition-colors ${activeCategory === cat ? 'bg-blue-600 text-white' : 'bg-zinc-200 text-zinc-700 hover:bg-zinc-300'}`}>{cat}</button>
+              ))}
             </div>
-          </div>
-          {/* Scene Column */}
-          <div className="md:col-span-2 flex flex-col">
-            <h2 className="text-2xl font-extrabold text-center mb-5 text-zinc-800">Scene</h2>
+            {/* Product List */}
+            <div className="grid grid-cols-2 gap-4 max-h-[40vh] overflow-y-auto pr-2">
+              {visibleProducts.map(product => (
+                <div key={product.id} onClick={() => setSelectedProduct(product)}>
+                  <ObjectCard product={product} isSelected={selectedProduct?.id === product.id} />
+                </div>
+              ))}
+            </div>
+            {/* Custom Upload */}
+            <div className="mt-4 border-t pt-4">
+              <input type="file" ref={customProductInputRef} onChange={(e) => handleCustomProductUpload(e, 'tile')} accept="image/png, image/jpeg" className="hidden" />
+              <button onClick={() => customProductInputRef.current?.click()} className="w-full text-center bg-zinc-200 hover:bg-zinc-300 text-zinc-800 font-bold py-2 px-4 rounded-lg text-sm transition-colors shadow-sm">
+                Upload Custom Product
+              </button>
+               <p className="text-xs text-zinc-500 mt-2 text-center">Custom uploads will be treated as repeating tiles for the selected category.</p>
+            </div>
+          </aside>
+
+          {/* Main Content */}
+          <main className="lg:col-span-3 flex flex-col">
             <div className="flex-grow flex items-center justify-center">
               <ImageUploader 
                   ref={sceneImgRef}
                   id="scene-uploader" 
-                  onFileSelect={setSceneImage} 
+                  onFileSelect={handleSceneUpload} 
                   imageUrl={sceneImageUrl}
-                  isDropZone={!!sceneImage && !isLoading}
-                  onProductDrop={handleProductDrop}
+                  isPlacementMode={!!selectedProduct && !isLoading}
+                  onSurfaceClick={handleProductApply}
                   persistedOrbPosition={persistedOrbPosition}
                   showDebugButton={!!debugImageUrl && !isLoading}
                   onDebugClick={() => setIsDebugModalOpen(true)}
-                  isTouchHovering={isHoveringDropZone}
-                  touchOrbPosition={touchOrbPosition}
               />
             </div>
-            <div className="text-center mt-4">
-              <div className="h-5 flex items-center justify-center">
-                {sceneImage && !isLoading && (
-                  <button
-                      onClick={handleChangeScene}
-                      className="text-sm text-blue-600 hover:text-blue-800 font-semibold"
-                  >
-                      Change Scene
-                  </button>
-                )}
-              </div>
+            <div className="text-center mt-4 min-h-[6rem] flex flex-col justify-center items-center">
+               {isLoading ? (
+                 <div className="animate-fade-in">
+                    <Spinner />
+                    <p className="text-xl mt-4 text-zinc-600 transition-opacity duration-500">{loadingMessages[loadingMessageIndex]}</p>
+                 </div>
+               ) : (
+                 <>
+                    <p className="text-zinc-500 animate-fade-in mb-4">
+                        {selectedProduct ? `Selected: ${selectedProduct.name}. Click a surface in the scene to apply.` : 'Select a product from the sidebar to begin.'}
+                    </p>
+                    <div className="flex items-center gap-4">
+                        <button onClick={handleChangeScene} className="text-sm text-blue-600 hover:text-blue-800 font-semibold">Change Scene</button>
+                        <div className="flex items-center gap-2">
+                            <button onClick={handleUndo} disabled={historyIndex <= 0} className="px-3 py-1 bg-white border rounded-md shadow-sm disabled:opacity-50">Undo</button>
+                            <button onClick={handleRedo} disabled={historyIndex >= history.length - 1} className="px-3 py-1 bg-white border rounded-md shadow-sm disabled:opacity-50">Redo</button>
+                        </div>
+                    </div>
+                 </>
+               )}
             </div>
-          </div>
-        </div>
-        <div className="text-center mt-10 min-h-[8rem] flex flex-col justify-center items-center">
-           {isLoading ? (
-             <div className="animate-fade-in">
-                <Spinner />
-                <p className="text-xl mt-4 text-zinc-600 transition-opacity duration-500">{loadingMessages[loadingMessageIndex]}</p>
-             </div>
-           ) : (
-             <p className="text-zinc-500 animate-fade-in">
-                Click on a surface in the scene (like a floor or wall) to visualize it with your new tiles.
-             </p>
-           )}
+          </main>
         </div>
       </div>
     );
   };
   
   return (
-    <div className="min-h-screen bg-white text-zinc-800 flex items-center justify-center p-4 md:p-8">
-      <TouchGhost 
-        imageUrl={isTouchDragging ? productImageUrl : null} 
-        position={touchGhostPosition}
-      />
-      <div className="flex flex-col items-center gap-8 w-full">
-        <Header />
-        <main className="w-full">
-          {renderContent()}
-        </main>
-      </div>
+    <div className="min-h-screen bg-white text-zinc-800 flex flex-col items-center p-4 md:p-8">
+      <Header />
+      <main className="w-full mt-8">
+        {renderContent()}
+      </main>
       <DebugModal 
         isOpen={isDebugModalOpen} 
         onClose={() => setIsDebugModalOpen(false)}

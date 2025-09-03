@@ -37,7 +37,6 @@ const cropToOriginalAspectRatio = (
         const img = new Image();
         img.src = imageDataUrl;
         img.onload = () => {
-            // Re-calculate the dimensions of the content area within the padded square image
             const aspectRatio = originalWidth / originalHeight;
             let contentWidth, contentHeight;
             if (aspectRatio > 1) { // Landscape
@@ -48,12 +47,10 @@ const cropToOriginalAspectRatio = (
                 contentWidth = targetDimension * aspectRatio;
             }
 
-            // Calculate the top-left offset of the content area
             const x = (targetDimension - contentWidth) / 2;
             const y = (targetDimension - contentHeight) / 2;
 
             const canvas = document.createElement('canvas');
-            // Set canvas to the final, un-padded dimensions
             canvas.width = contentWidth;
             canvas.height = contentHeight;
 
@@ -62,10 +59,8 @@ const cropToOriginalAspectRatio = (
                 return reject(new Error('Could not get canvas context for cropping.'));
             }
             
-            // Draw the relevant part of the square generated image onto the new, smaller canvas
             ctx.drawImage(img, x, y, contentWidth, contentHeight, 0, 0, contentWidth, contentHeight);
             
-            // Return the data URL of the newly cropped image
             resolve(canvas.toDataURL('image/jpeg', 0.95));
         };
         img.onerror = (err) => reject(new Error(`Image load error during cropping: ${err}`));
@@ -73,9 +68,7 @@ const cropToOriginalAspectRatio = (
 };
 
 
-// New resize logic inspired by the reference to enforce a consistent aspect ratio without cropping.
-// It resizes the image to fit within a square and adds padding, ensuring a consistent
-// input size for the AI model, which enhances stability.
+// Resizes the image to fit within a square and adds padding.
 const resizeImage = (file: File, targetDimension: number): Promise<File> => {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -96,12 +89,9 @@ const resizeImage = (file: File, targetDimension: number): Promise<File> => {
                     return reject(new Error('Could not get canvas context.'));
                 }
 
-                // Fill the canvas with a neutral background to avoid transparency issues
-                // and ensure a consistent input format for the model.
                 ctx.fillStyle = 'black';
                 ctx.fillRect(0, 0, targetDimension, targetDimension);
 
-                // Calculate new dimensions to fit inside the square canvas while maintaining aspect ratio
                 const aspectRatio = img.width / img.height;
                 let newWidth, newHeight;
 
@@ -113,17 +103,15 @@ const resizeImage = (file: File, targetDimension: number): Promise<File> => {
                     newWidth = targetDimension * aspectRatio;
                 }
 
-                // Calculate position to center the image on the canvas
                 const x = (targetDimension - newWidth) / 2;
                 const y = (targetDimension - newHeight) / 2;
                 
-                // Draw the resized image onto the centered position
                 ctx.drawImage(img, x, y, newWidth, newHeight);
 
                 canvas.toBlob((blob) => {
                     if (blob) {
                         resolve(new File([blob], file.name, {
-                            type: 'image/jpeg', // Force jpeg to handle padding color consistently
+                            type: 'image/jpeg',
                             lastModified: Date.now()
                         }));
                     } else {
@@ -192,11 +180,8 @@ const markImage = async (
                     return reject(new Error('Could not get canvas context for marking.'));
                 }
 
-                // Draw the original (padded) image
                 ctx.drawImage(img, 0, 0);
 
-                // Recalculate the content area's dimensions and offset within the padded square canvas.
-                // This is crucial to translate the content-relative percentages to the padded canvas coordinates.
                 const { originalWidth, originalHeight } = originalDimensions;
                 const aspectRatio = originalWidth / originalHeight;
                 let contentWidth, contentHeight;
@@ -212,18 +197,14 @@ const markImage = async (
                 const offsetX = (targetDimension - contentWidth) / 2;
                 const offsetY = (targetDimension - contentHeight) / 2;
 
-                // Calculate the marker's coordinates relative to the actual image content
                 const markerXInContent = (position.xPercent / 100) * contentWidth;
                 const markerYInContent = (position.yPercent / 100) * contentHeight;
 
-                // The final position on the canvas is the content's offset plus the relative position
                 const finalMarkerX = offsetX + markerXInContent;
                 const finalMarkerY = offsetY + markerYInContent;
 
-                // Make radius proportional to image size, but with a minimum
                 const markerRadius = Math.max(5, Math.min(canvas.width, canvas.height) * 0.015);
 
-                // Draw the marker (red circle with white outline) at the corrected coordinates
                 ctx.beginPath();
                 ctx.arc(finalMarkerX, finalMarkerY, markerRadius, 0, 2 * Math.PI, false);
                 ctx.fillStyle = 'red';
@@ -252,50 +233,32 @@ const markImage = async (
 
 /**
  * Generates a composite image using a multi-modal AI model.
- * The model takes a product image, a scene image, and a text prompt
- * to generate a new image with the product placed in the scene.
- * @param objectImage The file for the object to be placed.
- * @param objectDescription A text description of the object.
- * @param environmentImage The file for the background environment.
- * @param environmentDescription A text description of the environment.
- * @param dropPosition The relative x/y coordinates (0-100) where the product was dropped.
- * @returns A promise that resolves to an object containing the base64 data URL of the generated image and the debug image.
  */
 export const generateCompositeImage = async (
-    objectImage: File, 
-    objectDescription: string,
+    productImage: File, 
+    productDescription: string,
     environmentImage: File,
     environmentDescription: string,
-    dropPosition: { xPercent: number; yPercent: number; }
+    dropPosition: { xPercent: number; yPercent: number; },
+    applicationType: 'tile' | 'single'
 ): Promise<{ finalImageUrl: string; debugImageUrl: string; finalPrompt: string; }> => {
   console.log('Starting multi-step image generation process...');
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
 
-  // Get original scene dimensions for final cropping and correct marker placement
   const { width: originalWidth, height: originalHeight } = await getImageDimensions(environmentImage);
   
-  // Define standard dimension for model inputs
   const MAX_DIMENSION = 1024;
   
-  // STEP 1: Prepare images by resizing
   console.log('Resizing product and scene images...');
-  const resizedObjectImage = await resizeImage(objectImage, MAX_DIMENSION);
+  const resizedProductImage = await resizeImage(productImage, MAX_DIMENSION);
   const resizedEnvironmentImage = await resizeImage(environmentImage, MAX_DIMENSION);
 
-  // STEP 2: Mark the resized scene image for the description model and debug view
   console.log('Marking scene image for analysis...');
-  // Pass original dimensions to correctly calculate marker position on the padded image
   const markedResizedEnvironmentImage = await markImage(resizedEnvironmentImage, dropPosition, { originalWidth, originalHeight });
-
-  // The debug image is now the marked one.
   const debugImageUrl = await fileToDataUrl(markedResizedEnvironmentImage);
 
-
-  // STEP 3: Generate semantic location description with Gemini 2.5 Flash Lite using the MARKED image
-  console.log('Generating semantic location description with gemini-2.5-flash-lite...');
-  
+  console.log('Generating semantic location description...');
   const markedEnvironmentImagePart = await fileToPart(markedResizedEnvironmentImage);
-
   const descriptionPrompt = `
 You are an expert scene analyst. I will provide you with an image that has a red marker on it.
 Your task is to provide a dense, semantic description of the SURFACE at the exact location of the red marker.
@@ -319,37 +282,49 @@ Provide only the description of the surface in a single, concise sentence.
     console.log('Generated description:', semanticLocationDescription);
   } catch (error) {
     console.error('Failed to generate semantic location description:', error);
-    // Fallback to a generic statement if the description generation fails
     semanticLocationDescription = `at the specified location on the most prominent surface.`;
   }
 
-  // STEP 4: Generate composite image using the CLEAN image and the description
-  console.log('Preparing to generate composite image...');
+  console.log('Preparing to generate composite image with application type:', applicationType);
+  const productImagePart = await fileToPart(resizedProductImage);
+  const cleanEnvironmentImagePart = await fileToPart(resizedEnvironmentImage);
   
-  const objectImagePart = await fileToPart(resizedObjectImage);
-  const cleanEnvironmentImagePart = await fileToPart(resizedEnvironmentImage); // IMPORTANT: Use clean image
-  
-  const prompt = `
+const basePrompt = `
 **Role:**
-You are an expert interior design visualizer. Your task is to take a 'tile pattern' image and apply it as a texture to a surface within a 'scene' image, adjusting for perspective, lighting, and scale, while preserving existing objects.
+You are an expert interior design visualizer. Your task is to integrate a product into a 'scene' image, adjusting for perspective, lighting, and scale, while preserving existing objects.
 
-**Specifications:**
--   **Tile Pattern to apply:**
-    The first image provided is the tile pattern. You should use this as a repeating texture. Ignore any black padding or background around the pattern.
--   **Scene to use:**
-    The second image provided is the room scene. Ignore any black padding.
--   **Placement Instruction (Crucial):**
-    -   You must identify the surface (e.g., floor, wall, countertop) based on the following description.
-    -   Apply the tile pattern to this entire continuous surface, ensuring the pattern repeats seamlessly and naturally.
-    -   **Target Surface Description:** "${semanticLocationDescription}"
--   **Final Image Requirements:**
-    -   The output image's style, lighting, shadows, reflections, and camera perspective must exactly match the original scene.
-    -   The tile texture must be applied with correct perspective, distortion, and scale, making it look photorealistic on the identified surface.
-    -   **Crucially, you MUST preserve any existing objects in the scene that are on or in front of the surface you are texturing.** For example, if you are tiling a floor, any furniture, rugs, or items on the floor must remain untouched on top of the new tiles. If you are tiling a wall, any pictures, shelves, or furniture against the wall must remain. Do not remove or alter existing objects.
-    -   The final image should be a photorealistic rendering of the scene with the new tiles.
+**Product to apply:**
+The first image provided is the product. Ignore any black padding or background around it. Product name: "${productDescription}".
 
-The output should ONLY be the final, composed image. Do not add any text or explanation.
+**Scene to use:**
+The second image provided is the room scene. Ignore any black padding.
+
+**Placement Instruction (Crucial):**
+-   You must identify the surface (e.g., floor, wall, countertop) based on the following description.
+-   **Target Surface Description:** "${semanticLocationDescription}"
+
+**Final Image Requirements:**
+-   The output image's style, lighting, shadows, reflections, and camera perspective must exactly match the original scene.
+-   **Crucially, you MUST preserve any existing objects in the scene that are on or in front of the surface you are modifying.** For example, if you are modifying a floor, any furniture, rugs, or items on the floor must remain untouched on top of the new surface. If you are modifying a wall, any pictures, shelves, or furniture against the wall must remain. Do not remove or alter existing objects.
+-   The final image should be a photorealistic rendering of the scene with the new product applied.
 `;
+
+  const tilePromptExtension = `
+**Application Style: Tiling/Texture**
+-   Apply the product image as a repeating texture (like tiles or wallpaper) to the entire continuous surface identified.
+-   The texture must be applied with correct perspective, distortion, and scale, making it look photorealistic on the identified surface.
+`;
+
+  const singlePromptExtension = `
+**Application Style: Single Object Placement**
+-   Place the product as a single object (like a rug, mural, or photo frame) onto the identified surface.
+-   The object should be centered around the target location but placed naturally on the surface. For example, a rug should be flat on the floor, a photo frame should be flat on the wall.
+-   The object's scale should be realistic for the scene. Do not make it disproportionately large or small.
+`;
+
+  const prompt = applicationType === 'tile' 
+    ? basePrompt + tilePromptExtension 
+    : basePrompt + singlePromptExtension;
 
   const textPart = { text: prompt };
   
@@ -357,7 +332,7 @@ The output should ONLY be the final, composed image. Do not add any text or expl
   
   const response: GenerateContentResponse = await ai.models.generateContent({
     model: 'gemini-2.5-flash-image-preview',
-    contents: { parts: [objectImagePart, cleanEnvironmentImagePart, textPart] }, // IMPORTANT: Use clean image
+    contents: { parts: [productImagePart, cleanEnvironmentImagePart, textPart] },
   });
 
   console.log('Received response.');

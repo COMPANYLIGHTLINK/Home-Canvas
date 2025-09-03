@@ -13,9 +13,7 @@ const Header: React.FC = () => {
           </h1>
       </div>
       <p className="mt-4 text-lg text-zinc-600 max-w-3xl mx-auto">
-        Upload a tile pattern and a photo of your room.
-        <br />
-        Click on a surface to visualize how it would look with your new tiles.
+        Upload a photo of your room, select a product, and click a surface to begin.
       </p>
     </header>
   );
